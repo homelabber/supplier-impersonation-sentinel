@@ -1,0 +1,599 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Microsoft Sentinel scheduled analytics rules for supplier impersonation monitoring using Microsoft Defender for Office 365 EmailEvents, EmailUrlInfo, and Sentinel watchlists."
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Sentinel-enabled Log Analytics workspace."
+      }
+    },
+    "enableRules": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Set true to deploy rules enabled. Default is disabled for review and tuning."
+      }
+    }
+  },
+  "variables": {
+    "securityInsightsApiVersion": "2023-02-01"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('securityInsightsApiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'supplier-domain-authentication-failure'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Supplier impersonation - protected supplier domain with authentication failure",
+        "description": "Visible sender domain is in the protected supplier watchlist, but authentication evidence indicates DMARC, SPF, DKIM, or composite authentication failure.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "let QueryPeriod = 1h;\nlet EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize arg_max(Criticality, *) by SupplierDomain) on $left.SenderDomain == $right.SupplierDomain\n| where AuthRaw has_any ('dmarc:fail', '\"dmarc\":\"fail\"', 'dmarc=fail', 'compauth:fail', '\"compauth\":\"fail\"', 'spf:fail', '\"spf\":\"fail\"', 'dkim:fail', '\"dkim\":\"fail\"', 'authentication failed', 'composite authentication failed')\n    or tostring(column_ifexists(\"AuthenticationStatus\", \"\")) has_any (\"fail\", \"failed\")\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, SenderDomain, MailFromDomain, Criticality\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = SenderDomain\n| order by Recipients desc, Messages desc",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "InitialAccess",
+          "CredentialAccess"
+        ],
+        "techniques": [
+          "T1566"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Mailbox",
+            "fieldMappings": [
+              {
+                "identifier": "MailboxPrimaryAddress",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "DNS",
+            "fieldMappings": [
+              {
+                "identifier": "DomainName",
+                "columnName": "DNSCustomEntity"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SupplierName": "SupplierName",
+          "ImpersonationDomain": "DNSCustomEntity",
+          "MessageCount": "Messages",
+          "RecipientCount": "Recipients"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "DNS",
+              "Mailbox"
+            ],
+            "groupByCustomDetails": [
+              "SupplierName",
+              "ImpersonationDomain"
+            ]
+          }
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('securityInsightsApiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'supplier-display-name-unknown-domain'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Supplier impersonation - known supplier display name from unknown domain",
+        "description": "A display name registered to a protected supplier is used from a sender domain not assigned to that supplier.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "let QueryPeriod = 1h;\nlet EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nEmailBase\n| extend DisplayNameNormalized = tolower(trim(@\" \", SenderDisplayName))\n| where isnotempty(DisplayNameNormalized)\n| join kind=inner (ProtectedSuppliers | where isnotempty(DisplayNameKeyword) | summarize arg_max(Criticality, *) by SupplierName, DisplayNameKeyword) on $left.DisplayNameNormalized == $right.DisplayNameKeyword\n| join kind=leftanti (ProtectedSuppliers | project SupplierName, SenderDomain=SupplierDomain) on SupplierName, SenderDomain\n| summarize Messages=count(), Recipients=dcount(Recipient), SenderAddresses=make_set(SenderAddress, 20), SenderDomains=make_set(SenderDomain, 20), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SenderDisplayName, DisplayNameKeyword, Criticality\n| extend AccountCustomEntity = tostring(SenderAddresses[0]), DNSCustomEntity = tostring(SenderDomains[0])\n| order by Recipients desc, Messages desc",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "InitialAccess"
+        ],
+        "techniques": [
+          "T1566"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Mailbox",
+            "fieldMappings": [
+              {
+                "identifier": "MailboxPrimaryAddress",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "DNS",
+            "fieldMappings": [
+              {
+                "identifier": "DomainName",
+                "columnName": "DNSCustomEntity"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SupplierName": "SupplierName",
+          "ImpersonationDomain": "DNSCustomEntity",
+          "MessageCount": "Messages",
+          "RecipientCount": "Recipients"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "DNS",
+              "Mailbox"
+            ],
+            "groupByCustomDetails": [
+              "SupplierName",
+              "ImpersonationDomain"
+            ]
+          }
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('securityInsightsApiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'supplier-registered-lookalike-domain'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Supplier impersonation - known registered lookalike domain",
+        "description": "SenderFromDomain matches a domain in the supplier lookalike watchlist, such as brand-monitoring or typosquat intelligence.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "let QueryPeriod = 1h;\nlet EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nlet Lookalikes = _GetWatchlist('SupplierLookalikeDomains')\n| extend LookalikeDomain = tolower(coalesce(tostring(LookalikeDomain), tostring(SearchKey)))\n| extend ProtectedSupplierDomain = tolower(tostring(ProtectedSupplierDomain))\n| project ProtectedSupplierName, ProtectedSupplierDomain, LookalikeDomain, Source, FirstSeen, Notes;\nEmailBase\n| join kind=inner (Lookalikes) on $left.SenderDomain == $right.LookalikeDomain\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), SenderAddresses=make_set(SenderAddress, 20), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstMessage=min(EventTime), LastMessage=max(EventTime) by ProtectedSupplierName, ProtectedSupplierDomain, LookalikeDomain, Source, FirstSeen, Notes\n| extend SupplierName = ProtectedSupplierName\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), DNSCustomEntity = LookalikeDomain\n| order by Recipients desc, Messages desc",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "InitialAccess"
+        ],
+        "techniques": [
+          "T1566"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Mailbox",
+            "fieldMappings": [
+              {
+                "identifier": "MailboxPrimaryAddress",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "DNS",
+            "fieldMappings": [
+              {
+                "identifier": "DomainName",
+                "columnName": "DNSCustomEntity"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SupplierName": "SupplierName",
+          "ImpersonationDomain": "DNSCustomEntity",
+          "MessageCount": "Messages",
+          "RecipientCount": "Recipients"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "DNS",
+              "Mailbox"
+            ],
+            "groupByCustomDetails": [
+              "SupplierName",
+              "ImpersonationDomain"
+            ]
+          }
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('securityInsightsApiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'supplier-generated-lookalike-domain'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Supplier impersonation - generated lookalike domain",
+        "description": "SenderFromDomain is algorithmically similar to a protected supplier domain using edit distance, character replacement, TLD swap, prefix/suffix, hyphen insertion, or punycode indicators.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "let QueryPeriod = 1h;\nlet BaselinePeriod = 30d;\nlet compact = (value:string) { replace_regex(tolower(value), @\"[^a-z0-9]\", \"\") };\nlet skeleton = (value:string) {\n    replace_string(\n        replace_string(\n            replace_string(\n                replace_string(\n                    replace_string(\n                        replace_string(compact(value), \"0\", \"o\"),\n                    \"1\", \"l\"),\n                \"3\", \"e\"),\n            \"4\", \"a\"),\n        \"5\", \"s\"),\n    \"8\", \"b\")\n};\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| where isnotempty(SupplierDomain)\n| extend ProtectedRawRoot = tostring(split(SupplierDomain, \".\")[0])\n| extend ProtectedRoot = compact(ProtectedRawRoot)\n| extend ProtectedSkeleton = skeleton(ProtectedRawRoot)\n| where strlen(ProtectedRoot) >= 5\n| summarize arg_max(Criticality, *) by SupplierName, SupplierDomain, ProtectedRawRoot, ProtectedRoot, ProtectedSkeleton;\nlet BaselineDomains =\nEmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime between (ago(BaselinePeriod + QueryPeriod) .. ago(QueryPeriod))\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| summarize by SenderDomain;\nlet CurrentSenderDomains =\nEmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| where isnotempty(SenderDomain)\n| where SenderDomain !in ((ProtectedSuppliers | project SupplierDomain))\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), SenderAddresses=make_set(SenderAddress, 20), DisplayNames=make_set(SenderDisplayName, 10), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SenderDomain\n| extend SenderRawRoot = tostring(split(SenderDomain, \".\")[0])\n| extend SenderRoot = compact(SenderRawRoot)\n| extend SenderSkeleton = skeleton(SenderRawRoot)\n| where strlen(SenderRoot) >= 5;\nCurrentSenderDomains\n| extend JoinKey = 1\n| join kind=inner (ProtectedSuppliers | extend JoinKey = 1) on JoinKey\n| extend RootDistance = edit_distance(SenderRoot, ProtectedRoot)\n| extend SkeletonDistance = edit_distance(SenderSkeleton, ProtectedSkeleton)\n| extend IsTldSwap = SenderRoot == ProtectedRoot and SenderDomain != SupplierDomain\n| extend IsSmallEdit = abs(strlen(SenderRoot) - strlen(ProtectedRoot)) <= 2 and RootDistance between (1 .. 2)\n| extend IsCharacterReplacement = SenderSkeleton == ProtectedSkeleton and SenderRoot != ProtectedRoot\n| extend IsNearSkeleton = SkeletonDistance == 1 and RootDistance <= 3\n| extend IsAffixedBrand = SenderRoot != ProtectedRoot and strlen(SenderRoot) <= strlen(ProtectedRoot) + 12 and (SenderRoot startswith ProtectedRoot or SenderRoot endswith ProtectedRoot)\n| extend IsHyphenVariant = SenderRawRoot contains \"-\" and replace_string(tolower(SenderRawRoot), \"-\", \"\") == tolower(ProtectedRawRoot)\n| extend IsPunycode = SenderDomain startswith \"xn--\" or SenderDomain contains \".xn--\"\n| where IsTldSwap or IsSmallEdit or IsCharacterReplacement or IsNearSkeleton or IsAffixedBrand or IsHyphenVariant\n| join kind=leftouter (BaselineDomains | extend SeenInBaseline = true) on SenderDomain\n| extend BaselineStatus = iff(SeenInBaseline == true, \"Previously observed in baseline\", \"New sender domain in baseline window\")\n| extend LookalikeReason = trim(@\", \", strcat(\n    iff(IsTldSwap, \"same root with different TLD, \", \"\"),\n    iff(IsSmallEdit, \"small edit distance, \", \"\"),\n    iff(IsCharacterReplacement, \"character replacement/leetspeak skeleton match, \", \"\"),\n    iff(IsNearSkeleton, \"near skeleton match, \", \"\"),\n    iff(IsAffixedBrand, \"supplier name with prefix/suffix, \", \"\"),\n    iff(IsHyphenVariant, \"hyphen insertion variant, \", \"\"),\n    iff(IsPunycode, \"punycode/IDN indicator, \", \"\"),\n    BaselineStatus))\n| extend Score = 100 - (RootDistance * 10) + iff(IsCharacterReplacement, 20, 0) + iff(IsTldSwap, 15, 0) + iff(SeenInBaseline == true, 0, 10)\n| summarize arg_max(Score, *) by SupplierName, SupplierDomain, SenderDomain\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), DNSCustomEntity = SenderDomain\n| project SupplierName, SupplierDomain, Criticality, SenderDomain, LookalikeReason, RootDistance, SkeletonDistance, Score, BaselineStatus, Messages, Recipients, SampleRecipients, SenderAddresses, DisplayNames, Subjects, DeliveryLocations, ThreatTypes, DetectionMethods, FirstSeen, LastSeen, AccountCustomEntity, DNSCustomEntity\n| order by Score desc, Recipients desc, Messages desc",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "P31D",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "InitialAccess"
+        ],
+        "techniques": [
+          "T1566"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Mailbox",
+            "fieldMappings": [
+              {
+                "identifier": "MailboxPrimaryAddress",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "DNS",
+            "fieldMappings": [
+              {
+                "identifier": "DomainName",
+                "columnName": "DNSCustomEntity"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SupplierName": "SupplierName",
+          "ImpersonationDomain": "DNSCustomEntity",
+          "MessageCount": "Messages",
+          "RecipientCount": "Recipients"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "DNS",
+              "Mailbox"
+            ],
+            "groupByCustomDetails": [
+              "SupplierName",
+              "ImpersonationDomain"
+            ]
+          }
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('securityInsightsApiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'supplier-first-seen-financial-language'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Supplier impersonation - first-seen supplier sender with financial language",
+        "description": "A new sender/domain relationship for a protected supplier uses invoice, payment, bank, or remittance language in the subject.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "let QueryPeriod = 1d;\nlet BaselinePeriod = 30d;\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| summarize by SupplierName, SupplierDomain, Criticality;\nlet FinancialTerms = _GetWatchlist('SupplierFinancialTerms')\n| extend Term = tolower(coalesce(tostring(Term), tostring(SearchKey)))\n| summarize Terms=make_set(Term, 500);\nlet Baseline =\nEmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime between (ago(BaselinePeriod + QueryPeriod) .. ago(QueryPeriod))\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| summarize by SenderAddress, SenderDomain;\nEmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectLower = tolower(SubjectText)\n| where SubjectLower has_any (toscalar(FinancialTerms))\n| join kind=inner (ProtectedSuppliers) on $left.SenderDomain == $right.SupplierDomain\n| join kind=leftanti Baseline on SenderAddress, SenderDomain\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), Subjects=make_set(SubjectText, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, Criticality\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = SupplierDomain\n| order by Recipients desc, Messages desc",
+        "queryFrequency": "P1D",
+        "queryPeriod": "P31D",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "InitialAccess",
+          "Impact"
+        ],
+        "techniques": [
+          "T1566"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Mailbox",
+            "fieldMappings": [
+              {
+                "identifier": "MailboxPrimaryAddress",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "DNS",
+            "fieldMappings": [
+              {
+                "identifier": "DomainName",
+                "columnName": "DNSCustomEntity"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SupplierName": "SupplierName",
+          "ImpersonationDomain": "DNSCustomEntity",
+          "MessageCount": "Messages",
+          "RecipientCount": "Recipients"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "DNS",
+              "Mailbox"
+            ],
+            "groupByCustomDetails": [
+              "SupplierName",
+              "ImpersonationDomain"
+            ]
+          }
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('securityInsightsApiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'supplier-high-volume-campaign'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Supplier impersonation - high-volume supplier-themed campaign",
+        "description": "Multiple recipients received supplier-themed mail with common sender domain, subject, URL domain, or email cluster.",
+        "severity": "High",
+        "enabled": "[parameters('enableRules')]",
+        "query": "let QueryPeriod = 1h;\nlet EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nlet Urls = EmailUrlInfo\n| extend UrlEventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where UrlEventTime >= ago(QueryPeriod)\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend UrlDomain = tolower(tostring(column_ifexists(\"UrlDomain\", \"\")))\n| summarize UrlDomains=make_set(UrlDomain, 20) by NetworkMessageId;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize arg_max(Criticality, *) by SupplierDomain) on $left.SenderDomain == $right.SupplierDomain\n| join kind=leftouter Urls on NetworkMessageId\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 20), SenderAddresses=make_set(SenderAddress, 20), UrlDomains=make_set(UrlDomains, 20), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SubjectNormalized, EmailClusterId, Criticality\n| where Recipients >= 5 or Messages >= 10\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), DNSCustomEntity = SupplierDomain\n| order by Recipients desc, Messages desc",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "InitialAccess"
+        ],
+        "techniques": [
+          "T1566"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Mailbox",
+            "fieldMappings": [
+              {
+                "identifier": "MailboxPrimaryAddress",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "DNS",
+            "fieldMappings": [
+              {
+                "identifier": "DomainName",
+                "columnName": "DNSCustomEntity"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SupplierName": "SupplierName",
+          "ImpersonationDomain": "DNSCustomEntity",
+          "MessageCount": "Messages",
+          "RecipientCount": "Recipients"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "DNS",
+              "Mailbox"
+            ],
+            "groupByCustomDetails": [
+              "SupplierName",
+              "ImpersonationDomain"
+            ]
+          }
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('securityInsightsApiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'supplier-url-domain-mismatch'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Supplier impersonation - protected supplier mail with unrelated URL domain",
+        "description": "A protected supplier domain sent mail containing URLs whose domains do not align to the supplier domain, useful for payment portal and credential-harvest triage.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "let QueryPeriod = 1h;\nlet EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nlet Urls = EmailUrlInfo\n| extend UrlEventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where UrlEventTime >= ago(QueryPeriod)\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend Url = tostring(column_ifexists(\"Url\", \"\"))\n| extend UrlDomain = tolower(tostring(column_ifexists(\"UrlDomain\", \"\")))\n| where isnotempty(UrlDomain)\n| summarize Urls=make_set(Url, 20), UrlDomains=make_set(UrlDomain, 20) by NetworkMessageId;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize arg_max(Criticality, *) by SupplierDomain) on $left.SenderDomain == $right.SupplierDomain\n| join kind=inner Urls on NetworkMessageId\n| mv-expand UrlDomain = UrlDomains to typeof(string)\n| where UrlDomain !endswith SupplierDomain\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), Subjects=make_set(SubjectText, 10), UrlDomains=make_set(UrlDomain, 20), Urls=make_set(Urls, 20), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, Criticality\n| where Recipients >= 2 or Messages >= 3\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = tostring(UrlDomains[0]), URLCustomEntity = tostring(Urls[0])\n| order by Recipients desc, Messages desc",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "InitialAccess",
+          "CredentialAccess"
+        ],
+        "techniques": [
+          "T1566",
+          "T1556"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Mailbox",
+            "fieldMappings": [
+              {
+                "identifier": "MailboxPrimaryAddress",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "DNS",
+            "fieldMappings": [
+              {
+                "identifier": "DomainName",
+                "columnName": "DNSCustomEntity"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SupplierName": "SupplierName",
+          "ImpersonationDomain": "DNSCustomEntity",
+          "MessageCount": "Messages",
+          "RecipientCount": "Recipients"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "DNS",
+              "Mailbox"
+            ],
+            "groupByCustomDetails": [
+              "SupplierName",
+              "ImpersonationDomain"
+            ]
+          }
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "[variables('securityInsightsApiVersion')]",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), guid(parameters('workspaceName'), 'supplier-delivered-threat-or-remediation'))]",
+      "kind": "Scheduled",
+      "properties": {
+        "displayName": "Supplier impersonation - delivered supplier-themed threat or remediation activity",
+        "description": "Protected supplier mail has suspicious verdicts, detection methods, threat types, or remediation-relevant delivery locations.",
+        "severity": "Medium",
+        "enabled": "[parameters('enableRules')]",
+        "query": "let QueryPeriod = 1h;\nlet EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize arg_max(Criticality, *) by SupplierDomain) on $left.SenderDomain == $right.SupplierDomain\n| where DeliveryLocation in~ (\"Inbox/folder\", \"Junk folder\", \"Deleted items\", \"Quarantine\", \"Hosted quarantine\")\n| where DeliveryAction in~ (\"Delivered\", \"Junked\", \"Blocked\") or ThreatTypes !in (\"\", \"Spam\")\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 20), Subjects=make_set(SubjectText, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), DeliveryLocations=make_set(DeliveryLocation, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, Criticality\n| where Messages >= 3 or Recipients >= 2\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = SupplierDomain\n| order by Recipients desc, Messages desc",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": false,
+        "tactics": [
+          "InitialAccess"
+        ],
+        "techniques": [
+          "T1566"
+        ],
+        "entityMappings": [
+          {
+            "entityType": "Mailbox",
+            "fieldMappings": [
+              {
+                "identifier": "MailboxPrimaryAddress",
+                "columnName": "AccountCustomEntity"
+              }
+            ]
+          },
+          {
+            "entityType": "DNS",
+            "fieldMappings": [
+              {
+                "identifier": "DomainName",
+                "columnName": "DNSCustomEntity"
+              }
+            ]
+          }
+        ],
+        "customDetails": {
+          "SupplierName": "SupplierName",
+          "ImpersonationDomain": "DNSCustomEntity",
+          "MessageCount": "Messages",
+          "RecipientCount": "Recipients"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": false,
+            "lookbackDuration": "PT5H",
+            "matchingMethod": "Selected",
+            "groupByEntities": [
+              "DNS",
+              "Mailbox"
+            ],
+            "groupByCustomDetails": [
+              "SupplierName",
+              "ImpersonationDomain"
+            ]
+          }
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        }
+      }
+    }
+  ]
+}

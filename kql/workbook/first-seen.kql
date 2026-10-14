@@ -1,0 +1,29 @@
+let QueryPeriod = 1d;
+let BaselinePeriod = 30d;
+let ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')
+| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))
+| summarize by SupplierName, SupplierDomain, Criticality;
+let FinancialTerms = _GetWatchlist('SupplierFinancialTerms')
+| extend Term = tolower(coalesce(tostring(Term), tostring(SearchKey)))
+| summarize Terms=make_set(Term, 500);
+let Baseline =
+EmailEvents
+| extend EventTime = coalesce(column_ifexists("TimeGenerated", datetime(null)), column_ifexists("Timestamp", datetime(null)))
+| where EventTime between (ago(BaselinePeriod + QueryPeriod) .. ago(QueryPeriod))
+| extend SenderDomain = tolower(tostring(column_ifexists("SenderFromDomain", "")))
+| extend SenderAddress = tolower(tostring(column_ifexists("SenderFromAddress", "")))
+| summarize by SenderAddress, SenderDomain;
+EmailEvents
+| extend EventTime = coalesce(column_ifexists("TimeGenerated", datetime(null)), column_ifexists("Timestamp", datetime(null)))
+| where EventTime >= ago(QueryPeriod)
+| extend SenderDomain = tolower(tostring(column_ifexists("SenderFromDomain", "")))
+| extend SenderAddress = tolower(tostring(column_ifexists("SenderFromAddress", "")))
+| extend Recipient = tolower(tostring(column_ifexists("RecipientEmailAddress", "")))
+| extend SubjectText = tostring(column_ifexists("Subject", ""))
+| extend SubjectLower = tolower(SubjectText)
+| where SubjectLower has_any (toscalar(FinancialTerms))
+| join kind=inner (ProtectedSuppliers) on $left.SenderDomain == $right.SupplierDomain
+| join kind=leftanti Baseline on SenderAddress, SenderDomain
+| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), Subjects=make_set(SubjectText, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, Criticality
+| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = SupplierDomain
+| order by Recipients desc, Messages desc

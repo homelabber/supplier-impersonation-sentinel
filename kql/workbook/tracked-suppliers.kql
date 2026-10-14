@@ -1,0 +1,4 @@
+_GetWatchlist('ProtectedSupplierDomains')
+| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))
+| summarize Domains=dcount(SupplierDomain), DisplayNames=dcountif(DisplayNameKeyword, isnotempty(DisplayNameKeyword)), Criticalities=make_set(Criticality, 10), Notes=make_set(Notes, 5) by SupplierName
+| order by Domains desc, SupplierName asc

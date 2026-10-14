@@ -1,0 +1,7 @@
+SearchKey,Term,Category,SeverityWeight
+invoice,invoice,Invoice,1
+payment,payment,Payment,1
+wire,wire,Payment change,2
+bank account,bank account,Payment change,2
+remittance,remittance,Payment,1
+ach,ach,Payment change,2

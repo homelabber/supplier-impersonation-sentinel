@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "description": "Deploys the Supplier Impersonation Monitoring workbook into a Microsoft Sentinel workspace."
+  },
+  "parameters": {
+    "workbookDisplayName": {
+      "type": "string",
+      "defaultValue": "Supplier Impersonation Monitoring",
+      "metadata": {
+        "description": "Display name shown in Sentinel/Monitor Workbooks."
+      }
+    },
+    "workbookId": {
+      "type": "string",
+      "metadata": {
+        "description": "A GUID for the workbook resource name."
+      }
+    },
+    "location": {
+      "type": "string",
+      "metadata": {
+        "description": "Region for the workbook resource."
+      }
+    },
+    "workspaceResourceId": {
+      "type": "string",
+      "metadata": {
+        "description": "Full resource ID of the Log Analytics workspace."
+      }
+    },
+    "serializedData": {
+      "type": "string",
+      "metadata": {
+        "description": "Stringified workbook-content.json."
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "microsoft.insights/workbooks",
+      "apiVersion": "2022-04-01",
+      "name": "[parameters('workbookId')]",
+      "location": "[parameters('location')]",
+      "kind": "shared",
+      "properties": {
+        "displayName": "[parameters('workbookDisplayName')]",
+        "serializedData": "[parameters('serializedData')]",
+        "version": "1.0",
+        "sourceId": "[parameters('workspaceResourceId')]",
+        "category": "sentinel"
+      }
+    }
+  ]
+}

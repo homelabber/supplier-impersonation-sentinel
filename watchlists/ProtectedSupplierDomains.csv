@@ -1,0 +1,3 @@
+SearchKey,SupplierName,SupplierDomain,DisplayNameKeyword,Criticality,Notes
+contoso-supplier.example,Contoso Supplier,contoso-supplier.example,contoso accounts payable,High,Sample row. Replace with customer supplier domains.
+fabrikam-vendor.example,Fabrikam Vendor,fabrikam-vendor.example,fabrikam billing,Medium,Sample row. Add one row per display-name alias.

@@ -1,0 +1,30 @@
+let QueryPeriod = 1h;
+let EmailBase = EmailEvents
+| extend EventTime = coalesce(column_ifexists("TimeGenerated", datetime(null)), column_ifexists("Timestamp", datetime(null)))
+| where EventTime >= ago(QueryPeriod)
+| extend SenderDomain = tolower(tostring(column_ifexists("SenderFromDomain", "")))
+| extend MailFromDomain = tolower(tostring(column_ifexists("SenderMailFromDomain", "")))
+| extend SenderAddress = tolower(tostring(column_ifexists("SenderFromAddress", "")))
+| extend SenderDisplayName = tostring(column_ifexists("SenderDisplayName", ""))
+| extend Recipient = tolower(tostring(column_ifexists("RecipientEmailAddress", "")))
+| extend SubjectText = tostring(column_ifexists("Subject", ""))
+| extend SubjectNormalized = replace_regex(tolower(SubjectText), @"\s+", " ")
+| extend NetworkMessageId = tostring(column_ifexists("NetworkMessageId", ""))
+| extend DeliveryAction = tostring(column_ifexists("DeliveryAction", ""))
+| extend DeliveryLocation = tostring(column_ifexists("DeliveryLocation", ""))
+| extend ThreatTypes = tostring(column_ifexists("ThreatTypes", ""))
+| extend DetectionMethods = tostring(column_ifexists("DetectionMethods", ""))
+| extend EmailClusterId = tostring(column_ifexists("EmailClusterId", ""))
+| extend AuthRaw = tolower(tostring(column_ifexists("AuthenticationDetails", "")));
+let ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')
+| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))
+| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))
+| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;
+EmailBase
+| extend DisplayNameNormalized = tolower(trim(@" ", SenderDisplayName))
+| where isnotempty(DisplayNameNormalized)
+| join kind=inner (ProtectedSuppliers | where isnotempty(DisplayNameKeyword) | summarize arg_max(Criticality, *) by SupplierName, DisplayNameKeyword) on $left.DisplayNameNormalized == $right.DisplayNameKeyword
+| join kind=leftanti (ProtectedSuppliers | project SupplierName, SenderDomain=SupplierDomain) on SupplierName, SenderDomain
+| summarize Messages=count(), Recipients=dcount(Recipient), SenderAddresses=make_set(SenderAddress, 20), SenderDomains=make_set(SenderDomain, 20), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SenderDisplayName, DisplayNameKeyword, Criticality
+| extend AccountCustomEntity = tostring(SenderAddresses[0]), DNSCustomEntity = tostring(SenderDomains[0])
+| order by Recipients desc, Messages desc

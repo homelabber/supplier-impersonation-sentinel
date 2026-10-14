@@ -1,0 +1,32 @@
+let QueryPeriod = 1h;
+let EmailBase = EmailEvents
+| extend EventTime = coalesce(column_ifexists("TimeGenerated", datetime(null)), column_ifexists("Timestamp", datetime(null)))
+| where EventTime >= ago(QueryPeriod)
+| extend SenderDomain = tolower(tostring(column_ifexists("SenderFromDomain", "")))
+| extend MailFromDomain = tolower(tostring(column_ifexists("SenderMailFromDomain", "")))
+| extend SenderAddress = tolower(tostring(column_ifexists("SenderFromAddress", "")))
+| extend SenderDisplayName = tostring(column_ifexists("SenderDisplayName", ""))
+| extend Recipient = tolower(tostring(column_ifexists("RecipientEmailAddress", "")))
+| extend SubjectText = tostring(column_ifexists("Subject", ""))
+| extend SubjectNormalized = replace_regex(tolower(SubjectText), @"\s+", " ")
+| extend NetworkMessageId = tostring(column_ifexists("NetworkMessageId", ""))
+| extend DeliveryAction = tostring(column_ifexists("DeliveryAction", ""))
+| extend DeliveryLocation = tostring(column_ifexists("DeliveryLocation", ""))
+| extend ThreatTypes = tostring(column_ifexists("ThreatTypes", ""))
+| extend DetectionMethods = tostring(column_ifexists("DetectionMethods", ""))
+| extend EmailClusterId = tostring(column_ifexists("EmailClusterId", ""))
+| extend AuthRaw = tolower(tostring(column_ifexists("AuthenticationDetails", "")));
+let ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')
+| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))
+| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))
+| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;
+let Lookalikes = _GetWatchlist('SupplierLookalikeDomains')
+| extend LookalikeDomain = tolower(coalesce(tostring(LookalikeDomain), tostring(SearchKey)))
+| extend ProtectedSupplierDomain = tolower(tostring(ProtectedSupplierDomain))
+| project ProtectedSupplierName, ProtectedSupplierDomain, LookalikeDomain, Source, FirstSeen, Notes;
+EmailBase
+| join kind=inner (Lookalikes) on $left.SenderDomain == $right.LookalikeDomain
+| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), SenderAddresses=make_set(SenderAddress, 20), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstMessage=min(EventTime), LastMessage=max(EventTime) by ProtectedSupplierName, ProtectedSupplierDomain, LookalikeDomain, Source, FirstSeen, Notes
+| extend SupplierName = ProtectedSupplierName
+| extend AccountCustomEntity = tostring(SampleRecipients[0]), DNSCustomEntity = LookalikeDomain
+| order by Recipients desc, Messages desc

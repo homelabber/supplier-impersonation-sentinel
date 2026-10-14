@@ -1,0 +1,39 @@
+let QueryPeriod = 1h;
+let EmailBase = EmailEvents
+| extend EventTime = coalesce(column_ifexists("TimeGenerated", datetime(null)), column_ifexists("Timestamp", datetime(null)))
+| where EventTime >= ago(QueryPeriod)
+| extend SenderDomain = tolower(tostring(column_ifexists("SenderFromDomain", "")))
+| extend MailFromDomain = tolower(tostring(column_ifexists("SenderMailFromDomain", "")))
+| extend SenderAddress = tolower(tostring(column_ifexists("SenderFromAddress", "")))
+| extend SenderDisplayName = tostring(column_ifexists("SenderDisplayName", ""))
+| extend Recipient = tolower(tostring(column_ifexists("RecipientEmailAddress", "")))
+| extend SubjectText = tostring(column_ifexists("Subject", ""))
+| extend SubjectNormalized = replace_regex(tolower(SubjectText), @"\s+", " ")
+| extend NetworkMessageId = tostring(column_ifexists("NetworkMessageId", ""))
+| extend DeliveryAction = tostring(column_ifexists("DeliveryAction", ""))
+| extend DeliveryLocation = tostring(column_ifexists("DeliveryLocation", ""))
+| extend ThreatTypes = tostring(column_ifexists("ThreatTypes", ""))
+| extend DetectionMethods = tostring(column_ifexists("DetectionMethods", ""))
+| extend EmailClusterId = tostring(column_ifexists("EmailClusterId", ""))
+| extend AuthRaw = tolower(tostring(column_ifexists("AuthenticationDetails", "")));
+let ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')
+| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))
+| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))
+| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;
+let Urls = EmailUrlInfo
+| extend UrlEventTime = coalesce(column_ifexists("TimeGenerated", datetime(null)), column_ifexists("Timestamp", datetime(null)))
+| where UrlEventTime >= ago(QueryPeriod)
+| extend NetworkMessageId = tostring(column_ifexists("NetworkMessageId", ""))
+| extend Url = tostring(column_ifexists("Url", ""))
+| extend UrlDomain = tolower(tostring(column_ifexists("UrlDomain", "")))
+| where isnotempty(UrlDomain)
+| summarize Urls=make_set(Url, 20), UrlDomains=make_set(UrlDomain, 20) by NetworkMessageId;
+EmailBase
+| join kind=inner (ProtectedSuppliers | summarize arg_max(Criticality, *) by SupplierDomain) on $left.SenderDomain == $right.SupplierDomain
+| join kind=inner Urls on NetworkMessageId
+| mv-expand UrlDomain = UrlDomains to typeof(string)
+| where UrlDomain !endswith SupplierDomain
+| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), Subjects=make_set(SubjectText, 10), UrlDomains=make_set(UrlDomain, 20), Urls=make_set(Urls, 20), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, Criticality
+| where Recipients >= 2 or Messages >= 3
+| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = tostring(UrlDomains[0]), URLCustomEntity = tostring(Urls[0])
+| order by Recipients desc, Messages desc

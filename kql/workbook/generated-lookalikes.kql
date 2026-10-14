@@ -1,0 +1,78 @@
+let QueryPeriod = 1h;
+let BaselinePeriod = 30d;
+let compact = (value:string) { replace_regex(tolower(value), @"[^a-z0-9]", "") };
+let skeleton = (value:string) {
+    replace_string(
+        replace_string(
+            replace_string(
+                replace_string(
+                    replace_string(
+                        replace_string(compact(value), "0", "o"),
+                    "1", "l"),
+                "3", "e"),
+            "4", "a"),
+        "5", "s"),
+    "8", "b")
+};
+let ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')
+| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))
+| where isnotempty(SupplierDomain)
+| extend ProtectedRawRoot = tostring(split(SupplierDomain, ".")[0])
+| extend ProtectedRoot = compact(ProtectedRawRoot)
+| extend ProtectedSkeleton = skeleton(ProtectedRawRoot)
+| where strlen(ProtectedRoot) >= 5
+| summarize arg_max(Criticality, *) by SupplierName, SupplierDomain, ProtectedRawRoot, ProtectedRoot, ProtectedSkeleton;
+let BaselineDomains =
+EmailEvents
+| extend EventTime = coalesce(column_ifexists("TimeGenerated", datetime(null)), column_ifexists("Timestamp", datetime(null)))
+| where EventTime between (ago(BaselinePeriod + QueryPeriod) .. ago(QueryPeriod))
+| extend SenderDomain = tolower(tostring(column_ifexists("SenderFromDomain", "")))
+| summarize by SenderDomain;
+let CurrentSenderDomains =
+EmailEvents
+| extend EventTime = coalesce(column_ifexists("TimeGenerated", datetime(null)), column_ifexists("Timestamp", datetime(null)))
+| where EventTime {TimeRange}
+| extend SenderDomain = tolower(tostring(column_ifexists("SenderFromDomain", "")))
+| extend SenderAddress = tolower(tostring(column_ifexists("SenderFromAddress", "")))
+| extend SenderDisplayName = tostring(column_ifexists("SenderDisplayName", ""))
+| extend Recipient = tolower(tostring(column_ifexists("RecipientEmailAddress", "")))
+| extend SubjectText = tostring(column_ifexists("Subject", ""))
+| extend DeliveryLocation = tostring(column_ifexists("DeliveryLocation", ""))
+| extend ThreatTypes = tostring(column_ifexists("ThreatTypes", ""))
+| extend DetectionMethods = tostring(column_ifexists("DetectionMethods", ""))
+| where isnotempty(SenderDomain)
+| where SenderDomain !in ((ProtectedSuppliers | project SupplierDomain))
+| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), SenderAddresses=make_set(SenderAddress, 20), DisplayNames=make_set(SenderDisplayName, 10), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SenderDomain
+| extend SenderRawRoot = tostring(split(SenderDomain, ".")[0])
+| extend SenderRoot = compact(SenderRawRoot)
+| extend SenderSkeleton = skeleton(SenderRawRoot)
+| where strlen(SenderRoot) >= 5;
+CurrentSenderDomains
+| extend JoinKey = 1
+| join kind=inner (ProtectedSuppliers | extend JoinKey = 1) on JoinKey
+| extend RootDistance = edit_distance(SenderRoot, ProtectedRoot)
+| extend SkeletonDistance = edit_distance(SenderSkeleton, ProtectedSkeleton)
+| extend IsTldSwap = SenderRoot == ProtectedRoot and SenderDomain != SupplierDomain
+| extend IsSmallEdit = abs(strlen(SenderRoot) - strlen(ProtectedRoot)) <= 2 and RootDistance between (1 .. 2)
+| extend IsCharacterReplacement = SenderSkeleton == ProtectedSkeleton and SenderRoot != ProtectedRoot
+| extend IsNearSkeleton = SkeletonDistance == 1 and RootDistance <= 3
+| extend IsAffixedBrand = SenderRoot != ProtectedRoot and strlen(SenderRoot) <= strlen(ProtectedRoot) + 12 and (SenderRoot startswith ProtectedRoot or SenderRoot endswith ProtectedRoot)
+| extend IsHyphenVariant = SenderRawRoot contains "-" and replace_string(tolower(SenderRawRoot), "-", "") == tolower(ProtectedRawRoot)
+| extend IsPunycode = SenderDomain startswith "xn--" or SenderDomain contains ".xn--"
+| where IsTldSwap or IsSmallEdit or IsCharacterReplacement or IsNearSkeleton or IsAffixedBrand or IsHyphenVariant
+| join kind=leftouter (BaselineDomains | extend SeenInBaseline = true) on SenderDomain
+| extend BaselineStatus = iff(SeenInBaseline == true, "Previously observed in baseline", "New sender domain in baseline window")
+| extend LookalikeReason = trim(@", ", strcat(
+    iff(IsTldSwap, "same root with different TLD, ", ""),
+    iff(IsSmallEdit, "small edit distance, ", ""),
+    iff(IsCharacterReplacement, "character replacement/leetspeak skeleton match, ", ""),
+    iff(IsNearSkeleton, "near skeleton match, ", ""),
+    iff(IsAffixedBrand, "supplier name with prefix/suffix, ", ""),
+    iff(IsHyphenVariant, "hyphen insertion variant, ", ""),
+    iff(IsPunycode, "punycode/IDN indicator, ", ""),
+    BaselineStatus))
+| extend Score = 100 - (RootDistance * 10) + iff(IsCharacterReplacement, 20, 0) + iff(IsTldSwap, 15, 0) + iff(SeenInBaseline == true, 0, 10)
+| summarize arg_max(Score, *) by SupplierName, SupplierDomain, SenderDomain
+| extend AccountCustomEntity = tostring(SampleRecipients[0]), DNSCustomEntity = SenderDomain
+| project SupplierName, SupplierDomain, Criticality, SenderDomain, LookalikeReason, RootDistance, SkeletonDistance, Score, BaselineStatus, Messages, Recipients, SampleRecipients, SenderAddresses, DisplayNames, Subjects, DeliveryLocations, ThreatTypes, DetectionMethods, FirstSeen, LastSeen, AccountCustomEntity, DNSCustomEntity
+| order by Score desc, Recipients desc, Messages desc
