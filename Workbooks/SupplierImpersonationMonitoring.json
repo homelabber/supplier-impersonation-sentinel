@@ -1,0 +1,228 @@
+{
+  "version": "Notebook/1.0",
+  "isLocked": false,
+  "fallbackResourceIds": [
+    "__WORKSPACE_ID__"
+  ],
+  "items": [
+    {
+      "type": 1,
+      "name": "title",
+      "content": {
+        "json": "# Supplier Impersonation Monitoring\nUse Sentinel watchlists to extend beyond the Defender for Office 365 external domain impersonation limit. The same watchlists drive this workbook and the analytics rules."
+      }
+    },
+    {
+      "type": 9,
+      "name": "parameters",
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "p-timerange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 604800000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000
+                },
+                {
+                  "durationMs": 14400000
+                },
+                {
+                  "durationMs": 43200000
+                },
+                {
+                  "durationMs": 86400000
+                },
+                {
+                  "durationMs": 604800000
+                },
+                {
+                  "durationMs": 2592000000
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": 1,
+      "name": "watchlist-guidance",
+      "content": {
+        "json": "## Watchlist-driven configuration\nAdd supplier domains to the `ProtectedSupplierDomains` watchlist. Add registered typo-squats or monitored brand domains to `SupplierLookalikeDomains`. Add payment-change language to `SupplierFinancialTerms`. No workbook edit is required after the watchlists are updated."
+      }
+    },
+    {
+      "type": 3,
+      "name": "tracked-suppliers",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Tracked suppliers and configured domains",
+        "query": "_GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| summarize Domains=dcount(SupplierDomain), DisplayNames=dcountif(DisplayNameKeyword, isnotempty(DisplayNameKeyword)), Criticalities=make_set(Criticality, 10), Notes=make_set(Notes, 5) by SupplierName\n| order by Domains desc, SupplierName asc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "grid"
+      }
+    },
+    {
+      "type": 3,
+      "name": "top-impersonated-suppliers",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Top impersonated suppliers",
+        "query": "let EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nlet Urls = EmailUrlInfo\n| extend UrlEventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where UrlEventTime {TimeRange}\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend UrlDomain = tolower(tostring(column_ifexists(\"UrlDomain\", \"\")))\n| summarize UrlDomains=make_set(UrlDomain, 20) by NetworkMessageId;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize arg_max(Criticality, *) by SupplierDomain) on $left.SenderDomain == $right.SupplierDomain\n| join kind=leftouter Urls on NetworkMessageId\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 20), SenderAddresses=make_set(SenderAddress, 20), UrlDomains=make_set(UrlDomains, 20), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SubjectNormalized, EmailClusterId, Criticality\n| where Recipients >= 5 or Messages >= 10\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), DNSCustomEntity = SupplierDomain\n| order by Recipients desc, Messages desc\n| summarize Messages=sum(Messages), Recipients=sum(Recipients), SenderDomains=make_set(SenderDomain, 20), SampleSubjects=make_set(SubjectNormalized, 10) by SupplierName, Criticality\n| top 20 by Recipients desc, Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "suspicious-sender-domains",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Messages by suspicious sender domain",
+        "query": "let EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nEmailBase\n| join kind=leftouter (ProtectedSuppliers | summarize by SupplierDomain, SupplierName) on $left.SenderDomain == $right.SupplierDomain\n| where isnotempty(SupplierName) or SenderDisplayName has_any ((_GetWatchlist('ProtectedSupplierDomains') | where isnotempty(DisplayNameKeyword) | summarize make_set(DisplayNameKeyword, 500)))\n| summarize Messages=count(), Recipients=dcount(Recipient), Suppliers=make_set(SupplierName, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10) by SenderDomain\n| top 25 by Recipients desc, Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "auth-failures",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Supplier-domain authentication failures",
+        "query": "let EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize arg_max(Criticality, *) by SupplierDomain) on $left.SenderDomain == $right.SupplierDomain\n| where AuthRaw has_any ('dmarc:fail', '\"dmarc\":\"fail\"', 'dmarc=fail', 'compauth:fail', '\"compauth\":\"fail\"', 'spf:fail', '\"spf\":\"fail\"', 'dkim:fail', '\"dkim\":\"fail\"', 'authentication failed', 'composite authentication failed')\n    or tostring(column_ifexists(\"AuthenticationStatus\", \"\")) has_any (\"fail\", \"failed\")\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, SenderDomain, MailFromDomain, Criticality\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = SenderDomain\n| order by Recipients desc, Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "grid"
+      }
+    },
+    {
+      "type": 3,
+      "name": "delivery-remediation",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Delivery location and remediation status",
+        "query": "let EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize by SupplierDomain, SupplierName) on $left.SenderDomain == $right.SupplierDomain\n| summarize Messages=count(), Recipients=dcount(Recipient) by SupplierName, DeliveryAction, DeliveryLocation\n| order by Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "piechart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "first-seen",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "First-seen supplier sender/domain relationships with financial language",
+        "query": "let QueryPeriod = 1d;\nlet BaselinePeriod = 30d;\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| summarize by SupplierName, SupplierDomain, Criticality;\nlet FinancialTerms = _GetWatchlist('SupplierFinancialTerms')\n| extend Term = tolower(coalesce(tostring(Term), tostring(SearchKey)))\n| summarize Terms=make_set(Term, 500);\nlet Baseline =\nEmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime between (ago(BaselinePeriod + QueryPeriod) .. ago(QueryPeriod))\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| summarize by SenderAddress, SenderDomain;\nEmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime >= ago(QueryPeriod)\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectLower = tolower(SubjectText)\n| where SubjectLower has_any (toscalar(FinancialTerms))\n| join kind=inner (ProtectedSuppliers) on $left.SenderDomain == $right.SupplierDomain\n| join kind=leftanti Baseline on SenderAddress, SenderDomain\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), Subjects=make_set(SubjectText, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, Criticality\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = SupplierDomain\n| order by Recipients desc, Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "grid"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "lookalikes",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Lookalike domains by protected supplier",
+        "query": "let EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nlet Lookalikes = _GetWatchlist('SupplierLookalikeDomains')\n| extend LookalikeDomain = tolower(coalesce(tostring(LookalikeDomain), tostring(SearchKey)))\n| extend ProtectedSupplierDomain = tolower(tostring(ProtectedSupplierDomain))\n| project ProtectedSupplierName, ProtectedSupplierDomain, LookalikeDomain, Source, FirstSeen, Notes;\nEmailBase\n| join kind=inner (Lookalikes) on $left.SenderDomain == $right.LookalikeDomain\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), SenderAddresses=make_set(SenderAddress, 20), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstMessage=min(EventTime), LastMessage=max(EventTime) by ProtectedSupplierName, ProtectedSupplierDomain, LookalikeDomain, Source, FirstSeen, Notes\n| extend SupplierName = ProtectedSupplierName\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), DNSCustomEntity = LookalikeDomain\n| order by Recipients desc, Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "grid"
+      }
+    },
+    {
+      "type": 3,
+      "name": "generated-lookalikes",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Generated lookalike domains by protected supplier",
+        "query": "let QueryPeriod = 1h;\nlet BaselinePeriod = 30d;\nlet compact = (value:string) { replace_regex(tolower(value), @\"[^a-z0-9]\", \"\") };\nlet skeleton = (value:string) {\n    replace_string(\n        replace_string(\n            replace_string(\n                replace_string(\n                    replace_string(\n                        replace_string(compact(value), \"0\", \"o\"),\n                    \"1\", \"l\"),\n                \"3\", \"e\"),\n            \"4\", \"a\"),\n        \"5\", \"s\"),\n    \"8\", \"b\")\n};\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| where isnotempty(SupplierDomain)\n| extend ProtectedRawRoot = tostring(split(SupplierDomain, \".\")[0])\n| extend ProtectedRoot = compact(ProtectedRawRoot)\n| extend ProtectedSkeleton = skeleton(ProtectedRawRoot)\n| where strlen(ProtectedRoot) >= 5\n| summarize arg_max(Criticality, *) by SupplierName, SupplierDomain, ProtectedRawRoot, ProtectedRoot, ProtectedSkeleton;\nlet BaselineDomains =\nEmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime between (ago(BaselinePeriod + QueryPeriod) .. ago(QueryPeriod))\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| summarize by SenderDomain;\nlet CurrentSenderDomains =\nEmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| where isnotempty(SenderDomain)\n| where SenderDomain !in ((ProtectedSuppliers | project SupplierDomain))\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), SenderAddresses=make_set(SenderAddress, 20), DisplayNames=make_set(SenderDisplayName, 10), Subjects=make_set(SubjectText, 10), DeliveryLocations=make_set(DeliveryLocation, 10), ThreatTypes=make_set(ThreatTypes, 10), DetectionMethods=make_set(DetectionMethods, 10), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SenderDomain\n| extend SenderRawRoot = tostring(split(SenderDomain, \".\")[0])\n| extend SenderRoot = compact(SenderRawRoot)\n| extend SenderSkeleton = skeleton(SenderRawRoot)\n| where strlen(SenderRoot) >= 5;\nCurrentSenderDomains\n| extend JoinKey = 1\n| join kind=inner (ProtectedSuppliers | extend JoinKey = 1) on JoinKey\n| extend RootDistance = edit_distance(SenderRoot, ProtectedRoot)\n| extend SkeletonDistance = edit_distance(SenderSkeleton, ProtectedSkeleton)\n| extend IsTldSwap = SenderRoot == ProtectedRoot and SenderDomain != SupplierDomain\n| extend IsSmallEdit = abs(strlen(SenderRoot) - strlen(ProtectedRoot)) <= 2 and RootDistance between (1 .. 2)\n| extend IsCharacterReplacement = SenderSkeleton == ProtectedSkeleton and SenderRoot != ProtectedRoot\n| extend IsNearSkeleton = SkeletonDistance == 1 and RootDistance <= 3\n| extend IsAffixedBrand = SenderRoot != ProtectedRoot and strlen(SenderRoot) <= strlen(ProtectedRoot) + 12 and (SenderRoot startswith ProtectedRoot or SenderRoot endswith ProtectedRoot)\n| extend IsHyphenVariant = SenderRawRoot contains \"-\" and replace_string(tolower(SenderRawRoot), \"-\", \"\") == tolower(ProtectedRawRoot)\n| extend IsPunycode = SenderDomain startswith \"xn--\" or SenderDomain contains \".xn--\"\n| where IsTldSwap or IsSmallEdit or IsCharacterReplacement or IsNearSkeleton or IsAffixedBrand or IsHyphenVariant\n| join kind=leftouter (BaselineDomains | extend SeenInBaseline = true) on SenderDomain\n| extend BaselineStatus = iff(SeenInBaseline == true, \"Previously observed in baseline\", \"New sender domain in baseline window\")\n| extend LookalikeReason = trim(@\", \", strcat(\n    iff(IsTldSwap, \"same root with different TLD, \", \"\"),\n    iff(IsSmallEdit, \"small edit distance, \", \"\"),\n    iff(IsCharacterReplacement, \"character replacement/leetspeak skeleton match, \", \"\"),\n    iff(IsNearSkeleton, \"near skeleton match, \", \"\"),\n    iff(IsAffixedBrand, \"supplier name with prefix/suffix, \", \"\"),\n    iff(IsHyphenVariant, \"hyphen insertion variant, \", \"\"),\n    iff(IsPunycode, \"punycode/IDN indicator, \", \"\"),\n    BaselineStatus))\n| extend Score = 100 - (RootDistance * 10) + iff(IsCharacterReplacement, 20, 0) + iff(IsTldSwap, 15, 0) + iff(SeenInBaseline == true, 0, 10)\n| summarize arg_max(Score, *) by SupplierName, SupplierDomain, SenderDomain\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), DNSCustomEntity = SenderDomain\n| project SupplierName, SupplierDomain, Criticality, SenderDomain, LookalikeReason, RootDistance, SkeletonDistance, Score, BaselineStatus, Messages, Recipients, SampleRecipients, SenderAddresses, DisplayNames, Subjects, DeliveryLocations, ThreatTypes, DetectionMethods, FirstSeen, LastSeen, AccountCustomEntity, DNSCustomEntity\n| order by Score desc, Recipients desc, Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "grid"
+      }
+    },
+    {
+      "type": 3,
+      "name": "top-recipients",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Users receiving the most supplier-themed messages",
+        "query": "let EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize by SupplierDomain, SupplierName) on $left.SenderDomain == $right.SupplierDomain\n| summarize Messages=count(), SupplierCount=dcount(SupplierName), Suppliers=make_set(SupplierName, 20), SenderDomains=make_set(SenderDomain, 20), DeliveryLocations=make_set(DeliveryLocation, 10) by Recipient\n| top 25 by Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "barchart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "trends-detection",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Trends by DetectionMethods, ThreatTypes, and EmailClusterId",
+        "query": "let EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize by SupplierDomain, SupplierName) on $left.SenderDomain == $right.SupplierDomain\n| summarize Messages=count() by bin(EventTime, 1d), DetectionMethods, ThreatTypes, EmailClusterId\n| order by EventTime asc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "timechart"
+      },
+      "customWidth": "50"
+    },
+    {
+      "type": 3,
+      "name": "url-domains",
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Supplier mail with unrelated URL domains",
+        "query": "let EmailBase = EmailEvents\n| extend EventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where EventTime {TimeRange}\n| extend SenderDomain = tolower(tostring(column_ifexists(\"SenderFromDomain\", \"\")))\n| extend MailFromDomain = tolower(tostring(column_ifexists(\"SenderMailFromDomain\", \"\")))\n| extend SenderAddress = tolower(tostring(column_ifexists(\"SenderFromAddress\", \"\")))\n| extend SenderDisplayName = tostring(column_ifexists(\"SenderDisplayName\", \"\"))\n| extend Recipient = tolower(tostring(column_ifexists(\"RecipientEmailAddress\", \"\")))\n| extend SubjectText = tostring(column_ifexists(\"Subject\", \"\"))\n| extend SubjectNormalized = replace_regex(tolower(SubjectText), @\"\\s+\", \" \")\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend DeliveryAction = tostring(column_ifexists(\"DeliveryAction\", \"\"))\n| extend DeliveryLocation = tostring(column_ifexists(\"DeliveryLocation\", \"\"))\n| extend ThreatTypes = tostring(column_ifexists(\"ThreatTypes\", \"\"))\n| extend DetectionMethods = tostring(column_ifexists(\"DetectionMethods\", \"\"))\n| extend EmailClusterId = tostring(column_ifexists(\"EmailClusterId\", \"\"))\n| extend AuthRaw = tolower(tostring(column_ifexists(\"AuthenticationDetails\", \"\")));\nlet ProtectedSuppliers = _GetWatchlist('ProtectedSupplierDomains')\n| extend SupplierDomain = tolower(coalesce(tostring(SupplierDomain), tostring(SearchKey)))\n| extend DisplayNameKeyword = tolower(tostring(DisplayNameKeyword))\n| project SupplierName, SupplierDomain, DisplayNameKeyword, Criticality, Notes;\nlet Urls = EmailUrlInfo\n| extend UrlEventTime = coalesce(column_ifexists(\"TimeGenerated\", datetime(null)), column_ifexists(\"Timestamp\", datetime(null)))\n| where UrlEventTime {TimeRange}\n| extend NetworkMessageId = tostring(column_ifexists(\"NetworkMessageId\", \"\"))\n| extend Url = tostring(column_ifexists(\"Url\", \"\"))\n| extend UrlDomain = tolower(tostring(column_ifexists(\"UrlDomain\", \"\")))\n| where isnotempty(UrlDomain)\n| summarize Urls=make_set(Url, 20), UrlDomains=make_set(UrlDomain, 20) by NetworkMessageId;\nEmailBase\n| join kind=inner (ProtectedSuppliers | summarize arg_max(Criticality, *) by SupplierDomain) on $left.SenderDomain == $right.SupplierDomain\n| join kind=inner Urls on NetworkMessageId\n| mv-expand UrlDomain = UrlDomains to typeof(string)\n| where UrlDomain !endswith SupplierDomain\n| summarize Messages=count(), Recipients=dcount(Recipient), SampleRecipients=make_set(Recipient, 10), Subjects=make_set(SubjectText, 10), UrlDomains=make_set(UrlDomain, 20), Urls=make_set(Urls, 20), FirstSeen=min(EventTime), LastSeen=max(EventTime) by SupplierName, SupplierDomain, SenderAddress, Criticality\n| where Recipients >= 2 or Messages >= 3\n| extend AccountCustomEntity = tostring(SampleRecipients[0]), SenderCustomEntity = SenderAddress, DNSCustomEntity = tostring(UrlDomains[0]), URLCustomEntity = tostring(Urls[0])\n| order by Recipients desc, Messages desc",
+        "size": 0,
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "grid"
+      }
+    }
+  ],
+  "styleSettings": {},
+  "fromTemplateId": "sentinel-SupplierImpersonationMonitoring",
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

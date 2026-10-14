@@ -9,6 +9,7 @@ This content pack extends supplier and vendor impersonation monitoring beyond th
 | `arm/workbook.json` | ARM wrapper for the Sentinel workbook resource. |
 | `arm/workbook-content.json` | Workbook definition with KQL panels and watchlist guidance. |
 | `arm/analytics-rules.json` | Eight separate scheduled analytics rules. |
+| `Workbooks/SupplierImpersonationMonitoring.json` | Import-ready Sentinel workbook gallery template. |
 | `kql/analytics/*.kql` | Individual rule queries for tuning and review. |
 | `watchlists/*.csv` | Sample watchlist schemas and seed rows. |
 | `scripts/deploy-content.ps1` | Optional deployment helper for the ARM templates. |
@@ -65,6 +66,17 @@ The ARM template deploys the rules disabled by default so the customer can revie
 The workbook exposes tracked supplier configuration, top impersonated suppliers, suspicious sender domains, supplier-domain authentication failures, delivery and remediation status, first-seen sender/domain relationships, known and generated lookalike domains, highest-volume recipients, DetectionMethods/ThreatTypes/EmailClusterId trends, and unrelated URL domains.
 
 ## Deployment
+
+### Import the workbook template
+
+Use this path when you want to load the workbook directly in Sentinel without deploying the ARM wrapper.
+
+1. Create the three Sentinel watchlists using the CSV files in `watchlists/`.
+2. In Microsoft Sentinel, open **Workbooks**, create or open a workbook, select **Edit**, and open **Advanced editor**.
+3. Open the **Gallery Template** tab, replace the JSON with `Workbooks/SupplierImpersonationMonitoring.json`, and apply the change.
+4. Save the workbook to the Sentinel workspace.
+
+### Deploy with ARM
 
 The helper script expects the Az PowerShell modules used by `Get-AzOperationalInsightsWorkspace` and `New-AzResourceGroupDeployment`.
 
